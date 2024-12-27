@@ -3,9 +3,7 @@ mod p2p;
 mod fallback;
 
 fn main() {
-    mod crypto;
-    mod p2p;
-    mod fallback;
+
 
     #[tokio::main]
     async fn main() {
