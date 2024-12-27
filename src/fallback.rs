@@ -1,6 +1,7 @@
 use warp::Filter;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -19,7 +20,7 @@ pub async fn run_server() {
         .and(warp::body::json())
         .and(state_filter.clone())
         .map(|msg: String, state: ServerState| {
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = Uuid::new_v4().to_string();
             state.messages.lock().unwrap().insert(id.clone(), msg.into_bytes());
             warp::reply::json(&id)
         });
