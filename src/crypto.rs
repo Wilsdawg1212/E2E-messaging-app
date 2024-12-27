@@ -7,6 +7,7 @@ pub struct Crypto {
 
 impl Crypto {
     pub fn new(key_bytes: &[u8]) -> Self {
+        assert_eq!(key_bytes.len(), 32, "Key must be 32 bytes long for AES-256-GCM");
         let key = UnboundKey::new(&aead::AES_256_GCM, key_bytes).unwrap();
         Self {
             key: LessSafeKey::new(key),
