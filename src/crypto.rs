@@ -41,16 +41,20 @@ impl Crypto {
     pub fn derive_session_key(&mut self, peer_public_key: &[u8]) {
         use p256::PublicKey;
 
-        // Decode the peer's public key as a PublicKey type
-        let peer_key = EncodedPoint::from_bytes(peer_public_key)
-            .and_then(PublicKey::from_encoded_point)
-            .expect("Invalid public key");
+        // Decode the peer's public key as an EncodedPoint
+        let peer_encoded = EncodedPoint::from_bytes(peer_public_key).expect("Invalid public key");
+
+        // Convert the EncodedPoint to a PublicKey
+        let peer_key = PublicKey::from_encoded_point(&peer_encoded).unwrap();
+
+        // Compute the shared secret
         let shared_secret = self.private_key.diffie_hellman(&peer_key);
 
-        // Derive symmetric key from shared secret using HKDF
+        // Derive the session key from the shared secret
         let session_key = Self::derive_symmetric_key(&shared_secret);
         self.session_key = Some(session_key);
     }
+
 
 
     /// Encrypt a message using the session key
@@ -84,10 +88,12 @@ impl Crypto {
         let nonce = Nonce::try_assume_unique_for_key(nonce_bytes.try_into().unwrap()).unwrap();
 
         let mut ciphertext = ciphertext.to_vec();
-        session_key
+        let plaintext_len = session_key
             .open_in_place(nonce, Aad::empty(), &mut ciphertext)
-            .expect("Decryption failed");
+            .expect("Decryption failed")
+            .len();
 
+        ciphertext.truncate(plaintext_len);
         ciphertext
     }
 
