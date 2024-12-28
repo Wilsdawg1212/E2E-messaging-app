@@ -93,10 +93,13 @@ impl Crypto {
 
     /// Helper to derive a symmetric key from a shared secret
     fn derive_symmetric_key(shared_secret: &SharedSecret) -> LessSafeKey {
+        use ring::hkdf::{Salt, HKDF_SHA256};
+        use ring::aead::{AES_256_GCM, UnboundKey};
+
         let salt = Salt::new(HKDF_SHA256, b"example-salt"); // Replace with protocol-specific salt
-        let mut okm = [0u8; 32]; // 256-bit key
-        salt.extract(&shared_secret.raw_secret_bytes())
-            .expand(&[], AES_256_GCM)
+        let mut okm = [0u8; 32]; // 256-bit output key material
+        salt.extract(shared_secret.as_bytes())
+            .expand(&[], &AES_256_GCM) // Pass a reference to AES_256_GCM
             .unwrap()
             .fill(&mut okm)
             .unwrap();
