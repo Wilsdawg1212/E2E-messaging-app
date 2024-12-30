@@ -7,11 +7,10 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::hkdf::{Salt, HKDF_SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
 
-/// Structure to hold ECC keys and symmetric session key
 pub struct Crypto {
     private_key: EphemeralSecret,
     public_key: Vec<u8>,
-    session_key: Option<LessSafeKey>,
+    shared_secret: Option<[u8; 32]>, // Store the shared secret instead of `LessSafeKey`
 }
 
 impl Crypto {
@@ -27,7 +26,7 @@ impl Crypto {
         Crypto {
             private_key,
             public_key,
-            session_key: None,
+            shared_secret: None,
         }
     }
 
@@ -36,8 +35,7 @@ impl Crypto {
         &self.public_key
     }
 
-    /// Derive a shared session key using the peer's public key
-    /// Derive a shared session key using the peer's public key
+    /// Derive a shared secret using the peer's public key
     pub fn derive_session_key(&mut self, peer_public_key: &[u8]) {
         use p256::PublicKey;
 
@@ -50,45 +48,55 @@ impl Crypto {
         // Compute the shared secret
         let shared_secret = self.private_key.diffie_hellman(&peer_key);
 
-        // Derive the session key from the shared secret
-        let session_key = Self::derive_symmetric_key(&shared_secret);
-        self.session_key = Some(session_key);
+        // Convert the GenericArray<u8, U32> into a [u8; 32]
+        let mut secret_bytes = [0u8; 32];
+        secret_bytes.copy_from_slice(shared_secret.as_bytes());
+
+        // Store the shared secret
+        self.shared_secret = Some(secret_bytes);
     }
 
+    /// Get the shared secret for storage or external use
+    pub fn get_shared_secret(&self) -> [u8; 32] {
+        self.shared_secret.expect("Shared secret not derived")
+    }
 
+    /// Create a symmetric encryption key from a shared secret
+    pub fn create_symmetric_key(shared_secret: &[u8; 32]) -> LessSafeKey {
+        let salt = Salt::new(HKDF_SHA256, b"example-salt");
+        let mut okm = [0u8; 32];
+        salt.extract(shared_secret)
+            .expand(&[], &AES_256_GCM)
+            .unwrap()
+            .fill(&mut okm)
+            .unwrap();
 
-    /// Encrypt a message using the session key
-    pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        let session_key = self.session_key.as_ref().expect("Session key not derived");
+        let unbound_key = UnboundKey::new(&AES_256_GCM, &okm).unwrap();
+        LessSafeKey::new(unbound_key)
+    }
 
-        // Generate a random nonce
-        let mut nonce_bytes = [0u8; 12]; // AES-GCM requires a 96-bit nonce
-        SystemRandom::new().fill(&mut nonce_bytes).expect("Nonce generation failed");
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    /// Encrypt plaintext with a specified symmetric key
+    pub fn encrypt_with_key(key: &LessSafeKey, plaintext: &[u8]) -> Vec<u8> {
+        let nonce = Self::generate_nonce();
+        let nonce_slice = nonce.as_ref().to_vec();
 
         // Encrypt the plaintext
-        let mut ciphertext = plaintext.to_vec(); // Copy plaintext into a mutable vector
-        session_key
-            .seal_in_place_append_tag(nonce, Aad::empty(), &mut ciphertext)
+        let mut ciphertext = plaintext.to_vec();
+        key.seal_in_place_append_tag(nonce, Aad::empty(), &mut ciphertext)
             .expect("Encryption failed");
 
-        // Combine the nonce and ciphertext into a single Vec<u8> and return
-        let mut result = nonce_bytes.to_vec(); // Start with the nonce
-        result.extend_from_slice(&ciphertext); // Append the ciphertext
-        result
+        // Combine nonce and ciphertext
+        [nonce_slice, ciphertext].concat()
     }
 
-
-    /// Decrypt a message using the session key
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
-        let session_key = self.session_key.as_ref().expect("Session key not derived");
-
-        // Extract nonce and ciphertext
+    /// Decrypt ciphertext with a specified symmetric key
+    pub fn decrypt_with_key(key: &LessSafeKey, ciphertext: &[u8]) -> Vec<u8> {
+        // Split nonce and ciphertext
         let (nonce_bytes, ciphertext) = ciphertext.split_at(12);
         let nonce = Nonce::try_assume_unique_for_key(nonce_bytes.try_into().unwrap()).unwrap();
 
         let mut ciphertext = ciphertext.to_vec();
-        let plaintext_len = session_key
+        let plaintext_len = key
             .open_in_place(nonce, Aad::empty(), &mut ciphertext)
             .expect("Decryption failed")
             .len();
@@ -97,26 +105,10 @@ impl Crypto {
         ciphertext
     }
 
-    /// Helper to derive a symmetric key from a shared secret
-    fn derive_symmetric_key(shared_secret: &SharedSecret) -> LessSafeKey {
-        use ring::hkdf::{Salt, HKDF_SHA256};
-        use ring::aead::{AES_256_GCM, UnboundKey};
-
-        let salt = Salt::new(HKDF_SHA256, b"example-salt"); // Replace with protocol-specific salt
-        let mut okm = [0u8; 32]; // 256-bit output key material
-        salt.extract(shared_secret.as_bytes())
-            .expand(&[], &AES_256_GCM) // Pass a reference to AES_256_GCM
-            .unwrap()
-            .fill(&mut okm)
-            .unwrap();
-
-        LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &okm).unwrap())
-    }
-
-    /// Helper to generate a secure random nonce
+    /// Generate a secure random nonce
     fn generate_nonce() -> Nonce {
         let mut nonce_bytes = [0u8; 12];
-        SystemRandom::new().fill(&mut nonce_bytes).expect("Nonce generation failed");
+        SystemRandom::new().fill(&mut nonce_bytes).unwrap();
         Nonce::assume_unique_for_key(nonce_bytes)
     }
 }

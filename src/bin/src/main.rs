@@ -12,15 +12,5 @@ fn main() {
     device_a.derive_session_key(&public_key_b);
     device_b.derive_session_key(&public_key_a);
 
-    // Device A encrypts a message
-    let plaintext = b"Hello, Device B!";
-    let encrypted_message = device_a.encrypt(plaintext);
-    println!("Encrypted message: {:?}", encrypted_message);
 
-    // Device B decrypts the message
-    let decrypted_message = device_b.decrypt(&encrypted_message);
-    println!(
-        "Decrypted message: {:?}",
-        String::from_utf8(decrypted_message).unwrap()
-    );
 }

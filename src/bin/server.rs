@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Clone)]
 struct ServerState {
@@ -19,6 +20,7 @@ struct ServerState {
 enum ClientMessage {
     Register { name: String, public_key: Vec<u8> },
     Send { to: String, message: String },
+    RequestPublicKey { for_client: String },
 }
 
 #[derive(Serialize)]
@@ -89,6 +91,19 @@ async fn handle_connection(ws: WebSocket, state: ServerState) {
                         println!("Recipient {} not found", to);
                     }
                 }
+                Ok(ClientMessage::RequestPublicKey { for_client }) => {
+                    let public_keys = state.public_keys.lock().await;
+                    if let Some(public_key) = public_keys.get(&for_client) {
+                        let response = json!({
+                            "type": "PublicKeyResponse",
+                            "client_id": for_client,
+                            "public_key": public_key
+                        });
+                        let _ = tx.send(warp::ws::Message::text(response.to_string())).await;
+                    } else {
+                        println!("Public key for client {} not found", for_client);
+                    }
+                }
                 Err(_) => {
                     println!("Invalid message format from client {}", client_id);
                 }
@@ -122,6 +137,7 @@ async fn broadcast_client_list(
         .collect();
 
     let message = serde_json::to_string(&client_list).unwrap();
+    println!("Broadcasting client list!");
 
     for client_tx in clients.values() {
         let _ = client_tx.send(message.clone());
