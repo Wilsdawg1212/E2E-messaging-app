@@ -15,5 +15,8 @@ uuid = { version = "1.3", features = ["v4"] } # Generate unique IDs for messages
 p256 = { version = "0.10.0", features = ["ecdh"] }
 rand = "0.8.5"
 rand_core = "0.6.4"
+tokio-tungstenite = "0.21.0"
+futures-util = "0.3.31"
+futures = "0.3"
 
 
