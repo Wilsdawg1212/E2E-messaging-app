@@ -10,13 +10,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone)]
 struct ServerState {
     clients: Arc<tokio::sync::Mutex<HashMap<String, mpsc::UnboundedSender<String>>>>,
+    names: Arc<tokio::sync::Mutex<HashMap<String, String>>>, // Maps client IDs to display names
+    public_keys: Arc<tokio::sync::Mutex<HashMap<String, Vec<u8>>>>, // Maps client IDs to their public keys
 }
 
-
 #[derive(Deserialize)]
-struct ClientMessage {
-    to: String,
-    message: String,
+#[serde(tag = "type")]
+enum ClientMessage {
+    Register { name: String, public_key: Vec<u8> },
+    Send { to: String, message: String },
 }
 
 #[derive(Serialize)]
@@ -29,6 +31,8 @@ struct ServerMessage {
 async fn main() {
     let state = ServerState {
         clients: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        names: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        public_keys: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 
     let state_filter = warp::any().map(move || state.clone());
@@ -51,74 +55,74 @@ async fn handle_connection(ws: WebSocket, state: ServerState) {
     let client_id = uuid::Uuid::new_v4().to_string();
     println!("Client connected: {}", client_id);
 
-    // Add client to state
-    {
-        let mut clients = state.clients.lock().await;
-        clients.insert(client_id.clone(), client_tx);
-        broadcast_client_list(&clients, &state).await;
-    }
+    while let Some(Ok(msg)) = rx.next().await {
+        if msg.is_text() {
+            let text = msg.to_str().unwrap();
 
-    // Task to send messages to the client
-    let send_task = tokio::spawn(async move {
-        while let Some(message) = client_rx.recv().await {
-            if tx.send(warp::ws::Message::text(message)).await.is_err() {
-                break;
-            }
-        }
-    });
+            // Parse the message from the client
+            match serde_json::from_str::<ClientMessage>(text) {
+                Ok(ClientMessage::Register { name, public_key }) => {
+                    // Register the client with name and public key
+                    {
+                        let mut clients = state.clients.lock().await;
+                        let mut names = state.names.lock().await;
+                        let mut public_keys = state.public_keys.lock().await;
 
-    // Task to handle incoming messages from the client
-    let recv_task = tokio::spawn({
-        let state = state.clone();
-        let client_id = client_id.clone();
-        async move {
-            while let Some(Ok(msg)) = rx.next().await {
-                if msg.is_text() {
-                    // Parse and relay the message
-                    if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(msg.to_str().unwrap()) {
-                        let recipient_id = client_msg.to;
+                        clients.insert(client_id.clone(), client_tx.clone());
+                        names.insert(client_id.clone(), name.clone());
+                        public_keys.insert(client_id.clone(), public_key);
+
+                        broadcast_client_list(&clients, &names).await;
+                    }
+                    println!("Client registered with name: {}", name);
+                }
+                Ok(ClientMessage::Send { to, message }) => {
+                    // Relay the encrypted message to the recipient
+                    let mut clients = state.clients.lock().await;
+                    if let Some(recipient_tx) = clients.get(&to) {
                         let outgoing_msg = ServerMessage {
                             from: client_id.clone(),
-                            message: client_msg.message,
+                            message,
                         };
-
-                        // Forward the message to the recipient
-                        let mut clients = state.clients.lock().await;
-                        if let Some(recipient_tx) = clients.get(&recipient_id) {
-                            let _ = recipient_tx.send(serde_json::to_string(&outgoing_msg).unwrap());
-                        } else {
-                            println!("Recipient {} not found", recipient_id);
-                        }
+                        let _ = recipient_tx.send(serde_json::to_string(&outgoing_msg).unwrap());
                     } else {
-                        println!("Invalid message format from {}", client_id);
+                        println!("Recipient {} not found", to);
                     }
                 }
+                Err(_) => {
+                    println!("Invalid message format from client {}", client_id);
+                }
             }
-
-            // Remove the client on disconnect
-            {
-                let mut clients = state.clients.lock().await;
-                clients.remove(&client_id);
-                broadcast_client_list(&clients, &state).await;
-            }
-            println!("Client disconnected: {}", client_id);
         }
-    });
-
-    // Wait for either task to complete
-    tokio::select! {
-        _ = send_task => (),
-        _ = recv_task => (),
     }
+
+    // Remove the client on disconnect
+    {
+        let mut clients = state.clients.lock().await;
+        let mut names = state.names.lock().await;
+        let mut public_keys = state.public_keys.lock().await;
+
+        clients.remove(&client_id);
+        names.remove(&client_id);
+        public_keys.remove(&client_id);
+
+        broadcast_client_list(&clients, &names).await;
+    }
+    println!("Client disconnected: {}", client_id);
 }
 
-/// Broadcast the list of connected clients to all clients
+/// Broadcast the list of connected clients with names and IDs
 async fn broadcast_client_list(
     clients: &HashMap<String, mpsc::UnboundedSender<String>>,
-    state: &ServerState,
+    names: &HashMap<String, String>,
 ) {
-    let client_list: Vec<String> = clients.keys().cloned().collect();
+    let client_list: Vec<(String, String)> = names
+        .iter()
+        .map(|(id, name)| (id.clone(), name.clone()))
+        .collect();
+
     let message = serde_json::to_string(&client_list).unwrap();
+
     for client_tx in clients.values() {
         let _ = client_tx.send(message.clone());
     }

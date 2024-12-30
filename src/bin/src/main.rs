@@ -1,8 +1,4 @@
-mod crypto;
-mod fallback;
-
-
-use crypto::Crypto;
+use p2p_sparse_messaging::crypto::Crypto;
 
 fn main() {
     let mut device_a = Crypto::new();
