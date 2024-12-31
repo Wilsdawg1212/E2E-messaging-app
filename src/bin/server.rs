@@ -50,12 +50,24 @@ async fn main() {
 }
 
 async fn handle_connection(ws: WebSocket, state: ServerState) {
-    let (mut tx, mut rx) = ws.split();
+    let (tx, mut rx) = ws.split();
+    let tx = Arc::new(tokio::sync::Mutex::new(tx)); // Wrap tx in Arc<Mutex>
     let (client_tx, mut client_rx) = mpsc::unbounded_channel();
 
     // Assign a unique ID to the client
     let client_id = uuid::Uuid::new_v4().to_string();
     println!("Client connected: {}", client_id);
+
+    // Spawn a task to forward messages from client_rx to the WebSocket
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        while let Some(message) = client_rx.recv().await {
+            let mut tx = tx_clone.lock().await; // Lock tx for sending
+            if tx.send(warp::ws::Message::text(message)).await.is_err() {
+                break; // Exit loop if sending fails
+            }
+        }
+    });
 
     while let Some(Ok(msg)) = rx.next().await {
         if msg.is_text() {
@@ -99,6 +111,7 @@ async fn handle_connection(ws: WebSocket, state: ServerState) {
                             "client_id": for_client,
                             "public_key": public_key
                         });
+                        let mut tx = tx.lock().await; // Lock tx for sending
                         let _ = tx.send(warp::ws::Message::text(response.to_string())).await;
                     } else {
                         println!("Public key for client {} not found", for_client);
@@ -126,6 +139,8 @@ async fn handle_connection(ws: WebSocket, state: ServerState) {
     println!("Client disconnected: {}", client_id);
 }
 
+
+
 /// Broadcast the list of connected clients with names and IDs
 async fn broadcast_client_list(
     clients: &HashMap<String, mpsc::UnboundedSender<String>>,
@@ -137,9 +152,16 @@ async fn broadcast_client_list(
         .collect();
 
     let message = serde_json::to_string(&client_list).unwrap();
-    println!("Broadcasting client list!");
+    println!("Broadcasting client list! {}", message);
 
-    for client_tx in clients.values() {
-        let _ = client_tx.send(message.clone());
+
+    for (client_id, client_tx) in clients.iter() {
+        println!("Sending to client: {}", client_id);
+        if let Err(e) = client_tx.send(message.clone()) {
+            println!("Failed to send client list: {}", e);
+        }
     }
 }
+
+
+

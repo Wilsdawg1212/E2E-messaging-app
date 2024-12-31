@@ -51,25 +51,31 @@ async fn main() {
     let shared_secrets_clone = shared_secrets.clone();
 
     tokio::spawn(async move {
+        println!("WebSocket reader task started!");
         while let Some(msg) = reader.next().await {
+            println!("Received message");
             match msg {
                 Ok(msg) if msg.is_text() => {
                     let message = msg.to_text().unwrap();
+                    println!("Received message: {}", message);
 
-                    // Update client list or process encrypted message
+                    // Try to parse the message as a client list update
                     if let Ok(client_list) = serde_json::from_str::<Vec<(String, String)>>(message) {
                         // Update the connected client list
                         let mut clients = clients_clone.lock().await;
                         *clients = client_list;
-                        println!("Connected clients: {:?}", *clients);
+                        println!("Updated connected clients: {:?}", *clients);
+                        continue; // Skip further processing since this is a client list
                     }
 
+                    // Try to parse the message as a public key response
                     if let Ok(public_key_response) = serde_json::from_str::<serde_json::Value>(message) {
                         if public_key_response["type"] == "PublicKeyResponse" {
                             let peer_id = public_key_response["client_id"].as_str().unwrap();
                             let peer_public_key = public_key_response["public_key"].as_array().unwrap();
 
-                            let peer_public_key_bytes: Vec<u8> = peer_public_key.iter().map(|v| v.as_u64().unwrap() as u8).collect();
+                            let peer_public_key_bytes: Vec<u8> =
+                                peer_public_key.iter().map(|v| v.as_u64().unwrap() as u8).collect();
 
                             let mut crypto = crypto_clone.lock().await;
                             crypto.derive_session_key(&peer_public_key_bytes);
@@ -78,8 +84,12 @@ async fn main() {
                             shared_secrets.insert(peer_id.to_string(), crypto.get_shared_secret());
 
                             println!("Shared secret established with client: {}", peer_id);
+                            continue; // Skip further processing since this is a public key response
                         }
-                    } else if let Ok(encrypted_message) = base64::decode(message) {
+                    }
+
+                    // Handle encrypted messages
+                    if let Ok(encrypted_message) = base64::decode(message) {
                         let mut shared_secrets = shared_secrets_clone.lock().await;
                         if let Some(secret) = shared_secrets.get("sender_client_id") {
                             let key = Crypto::create_symmetric_key(secret);
@@ -88,12 +98,15 @@ async fn main() {
                         } else {
                             println!("No shared secret available for sender.");
                         }
+                    } else {
+                        println!("Unknown message type received: {}", message);
                     }
                 }
                 _ => break,
             }
         }
     });
+
 
     // Main loop for user input
     println!("Type '/list' to see connected clients, or '/quit' to exit.");
