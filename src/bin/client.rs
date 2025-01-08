@@ -7,6 +7,7 @@ use p2p_sparse_messaging::crypto::{Crypto};
 use std::sync::Arc;
 use base64;
 use std::collections::HashMap;
+use tokio_tungstenite::tungstenite::{Error, Message};
 
 #[tokio::main]
 async fn main() {
@@ -68,11 +69,12 @@ async fn main() {
                         continue; // Skip further processing since this is a client list
                     }
 
-                    // Try to parse the message as a public key response
-                    if let Ok(public_key_response) = serde_json::from_str::<serde_json::Value>(message) {
-                        if public_key_response["type"] == "PublicKeyResponse" {
-                            let peer_id = public_key_response["client_id"].as_str().unwrap();
-                            let peer_public_key = public_key_response["public_key"].as_array().unwrap();
+                    // Try to parse the message as a structured JSON object
+                    if let Ok(parsed_message) = serde_json::from_str::<serde_json::Value>(message) {
+                        if parsed_message["type"] == "PublicKeyResponse" {
+                            // Handle public key response
+                            let peer_id = parsed_message["client_id"].as_str().unwrap();
+                            let peer_public_key = parsed_message["public_key"].as_array().unwrap();
 
                             let peer_public_key_bytes: Vec<u8> =
                                 peer_public_key.iter().map(|v| v.as_u64().unwrap() as u8).collect();
@@ -84,25 +86,36 @@ async fn main() {
                             shared_secrets.insert(peer_id.to_string(), crypto.get_shared_secret());
 
                             println!("Shared secret established with client: {}", peer_id);
-                            continue; // Skip further processing since this is a public key response
-                        }
-                    }
-
-                    // Handle encrypted messages
-                    if let Ok(encrypted_message) = base64::decode(message) {
-                        let mut shared_secrets = shared_secrets_clone.lock().await;
-                        if let Some(secret) = shared_secrets.get("sender_client_id") {
-                            let key = Crypto::create_symmetric_key(secret);
-                            let decrypted_message = Crypto::decrypt_with_key(&key, &encrypted_message);
-                            println!("Decrypted message: {:?}", String::from_utf8_lossy(&decrypted_message));
+                            return; // Exit early since this is a public key response
+                        } else if let Some(from) = parsed_message["from"].as_str() {
+                            // Handle encrypted messages
+                            if let Some(encrypted_message) = parsed_message["message"].as_str() {
+                                println!("Received encrypted message from {}: {}", from, encrypted_message);
+                                let mut shared_secrets = shared_secrets_clone.lock().await;
+                                if let Some(secret) = shared_secrets.get(from) {
+                                    let key = Crypto::create_symmetric_key(secret);
+                                    if let Ok(decoded_message) = base64::decode(encrypted_message) {
+                                        let decrypted_message = Crypto::decrypt_with_key(&key, &decoded_message);
+                                        println!(
+                                            "Decrypted message from {}: {:?}",
+                                            from,
+                                            String::from_utf8_lossy(&decrypted_message)
+                                        );
+                                    } else {
+                                        println!("Failed to decode encrypted message from {}", from);
+                                    }
+                                } else {
+                                    println!("No shared secret available for sender: {}", from);
+                                }
+                            }
                         } else {
-                            println!("No shared secret available for sender.");
+                            println!("Unknown message type received: {}", message);
                         }
                     } else {
-                        println!("Unknown message type received: {}", message);
+                        println!("Malformed message received: {}", message);
                     }
                 }
-                _ => break,
+                _ => {println!("Message fell through");}
             }
         }
     });

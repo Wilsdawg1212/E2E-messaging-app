@@ -64,7 +64,10 @@ async fn handle_connection(ws: WebSocket, state: ServerState) {
         while let Some(message) = client_rx.recv().await {
             let mut tx = tx_clone.lock().await; // Lock tx for sending
             if tx.send(warp::ws::Message::text(message)).await.is_err() {
+                println!("Failed to send message to client");
                 break; // Exit loop if sending fails
+            } else {
+                println!("Message sent to client");
             }
         }
     });
@@ -94,11 +97,15 @@ async fn handle_connection(ws: WebSocket, state: ServerState) {
                     // Relay the encrypted message to the recipient
                     let mut clients = state.clients.lock().await;
                     if let Some(recipient_tx) = clients.get(&to) {
-                        let outgoing_msg = ServerMessage {
-                            from: client_id.clone(),
-                            message,
-                        };
-                        let _ = recipient_tx.send(serde_json::to_string(&outgoing_msg).unwrap());
+                        let outgoing_msg = json!({
+                            "from": client_id.clone(),
+                            "message": message
+                        });
+                        if let Err(e) = recipient_tx.send(serde_json::to_string(&outgoing_msg).unwrap()) {
+                            println!("Failed to send message to {}: {}", to, e);
+                        } else {
+                            println!("Message successfully sent from {} to {}", client_id, to);
+                        }
                     } else {
                         println!("Recipient {} not found", to);
                     }
