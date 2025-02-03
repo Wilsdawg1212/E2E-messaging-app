@@ -86,7 +86,7 @@ async fn main() {
                             shared_secrets.insert(peer_id.to_string(), crypto.get_shared_secret());
 
                             println!("Shared secret established with client: {}", peer_id);
-                            return; // Exit early since this is a public key response
+                            continue; // Changed from return to continue
                         } else if let Some(from) = parsed_message["from"].as_str() {
                             // Handle encrypted messages
                             if let Some(encrypted_message) = parsed_message["message"].as_str() {
@@ -115,9 +115,16 @@ async fn main() {
                         println!("Malformed message received: {}", message);
                     }
                 }
-                _ => {println!("Message fell through");}
+                Err(e) => {
+                    println!("Error receiving message: {:?}", e);
+                    break;
+                }
+                _ => {
+                    println!("Message fell through");
+                }
             }
         }
+        println!("WebSocket reader task ended!");
     });
 
 
